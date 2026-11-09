@@ -39,6 +39,43 @@ from (
 ) as users(id, email, name, profile_role)
 on conflict (id) do nothing;
 
+insert into auth.identities (
+  provider_id,
+  user_id,
+  identity_data,
+  provider,
+  last_sign_in_at,
+  created_at,
+  updated_at
+)
+select
+  users.id,
+  users.id::uuid,
+  jsonb_build_object(
+    'sub', users.id,
+    'email', users.email,
+    'email_verified', true
+  ),
+  'email',
+  now(),
+  now(),
+  now()
+from (
+  values
+    ('10000000-0000-4000-8000-000000000001', 'demo-freelancer@kazilink.local'),
+    ('10000000-0000-4000-8000-000000000002', 'freelancer2@kazilink.local'),
+    ('10000000-0000-4000-8000-000000000003', 'freelancer3@kazilink.local'),
+    ('10000000-0000-4000-8000-000000000004', 'freelancer4@kazilink.local'),
+    ('10000000-0000-4000-8000-000000000005', 'freelancer5@kazilink.local'),
+    ('10000000-0000-4000-8000-000000000006', 'freelancer6@kazilink.local'),
+    ('10000000-0000-4000-8000-000000000007', 'freelancer7@kazilink.local'),
+    ('10000000-0000-4000-8000-000000000008', 'freelancer8@kazilink.local'),
+    ('10000000-0000-4000-8000-000000000009', 'freelancer9@kazilink.local'),
+    ('10000000-0000-4000-8000-000000000010', 'freelancer10@kazilink.local'),
+    ('20000000-0000-4000-8000-000000000001', 'demo-owner@kazilink.local')
+) as users(id, email)
+on conflict (provider_id, provider) do nothing;
+
 update public.profiles as profile
 set
   title = sample.title,
