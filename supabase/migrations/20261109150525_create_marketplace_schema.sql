@@ -116,8 +116,12 @@ as $$
 declare
   requested_role text := new.raw_user_meta_data ->> 'role';
   profile_name text := nullif(trim(new.raw_user_meta_data ->> 'name'), '');
+  is_freelancer boolean := requested_role = 'freelancer';
 begin
-  insert into public.profiles (id, name, role)
+  insert into public.profiles (
+    id, name, role, title, service, category, price, location, languages,
+    experience, availability, accepts_mpesa, bio
+  )
   values (
     new.id,
     coalesce(
@@ -125,7 +129,20 @@ begin
       nullif(split_part(coalesce(new.email, new.phone, ''), '@', 1), ''),
       'KaziLink member'
     ),
-    case when requested_role = 'freelancer' then 'freelancer' else 'owner' end
+    case when is_freelancer then 'freelancer' else 'owner' end,
+    case when is_freelancer then 'Digital freelancer' end,
+    case when is_freelancer then 'Digital services' end,
+    case when is_freelancer then 'Design and Creative' end,
+    case when is_freelancer then 2500 end,
+    case when is_freelancer then 'Nairobi' end,
+    case when is_freelancer then array['English', 'Kiswahili'] else '{}' end,
+    case when is_freelancer then 'new' end,
+    case when is_freelancer then 'flexible' end,
+    coalesce(is_freelancer, false),
+    case
+      when is_freelancer
+        then 'Tell local businesses a little about what you do and how you can help.'
+    end
   );
   return new;
 end;
@@ -423,7 +440,7 @@ create policy reviews_completed_request_insert
       from public.job_requests as request
       where request.id = request_id
         and request.client_id = (select auth.uid())
-        and request.freelancer_id = freelancer_id
+        and request.freelancer_id = reviews.freelancer_id
         and request.status = 'completed'
     )
   );

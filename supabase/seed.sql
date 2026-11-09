@@ -12,7 +12,7 @@ insert into auth.users (
   updated_at
 )
 select
-  users.id,
+  users.id::uuid,
   '00000000-0000-0000-0000-000000000000',
   'authenticated',
   'authenticated',
