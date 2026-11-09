@@ -2,7 +2,6 @@ node_modules/
 dist/
 build/
 .next/
-backend/.env
 .env
 .env.*
 !.env.example

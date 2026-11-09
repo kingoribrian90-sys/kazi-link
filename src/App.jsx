@@ -1,5 +1,5 @@
-import { lazy, Suspense, useEffect, useState } from "react";
-import { api } from "./api.js";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { categories, seedFreelancers, seedReviews } from "./data.js";
 import { Avatar, Brand, Footer, Icon } from "./components/ui.jsx";
 import { AppDialogs } from "./components/AppDialogs.jsx";
 
@@ -24,13 +24,35 @@ const SearchPage = lazy(() =>
   })),
 );
 
+const storage = {
+  get(key, fallback) {
+    try {
+      const value = localStorage.getItem(`kazilink-${key}`);
+      return value ? JSON.parse(value) : fallback;
+    } catch {
+      return fallback;
+    }
+  },
+  set(key, value) {
+    try {
+      localStorage.setItem(`kazilink-${key}`, JSON.stringify(value));
+    } catch {
+      /* local storage may be unavailable */
+    }
+  },
+};
+
 export default function App() {
-  const [profiles, setProfiles] = useState([]);
-  const [requests, setRequests] = useState([]);
-  const [reviews, setReviews] = useState([]);
-  const [user, setUser] = useState(null);
-  const [myProfile, setMyProfile] = useState(null);
-  const [savedIds, setSavedIds] = useState([]);
+  const [profiles, setProfiles] = useState(() =>
+    storage.get("profiles", seedFreelancers),
+  );
+  const [requests, setRequests] = useState(() => storage.get("requests", []));
+  const [reviews, setReviews] = useState(() =>
+    storage.get("reviews", seedReviews),
+  );
+  const [users, setUsers] = useState(() => storage.get("users", []));
+  const [user, setUser] = useState(() => storage.get("user", null));
+  const [savedIds, setSavedIds] = useState(() => storage.get("saved", []));
   const [view, setView] = useState("home");
   const [selected, setSelected] = useState(null);
   const [query, setQuery] = useState("");
@@ -57,81 +79,12 @@ export default function App() {
   const [toast, setToast] = useState("");
   const [mobileMenu, setMobileMenu] = useState(false);
 
-  useEffect(() => {
-    let active = true;
-    const load = async () => {
-      try {
-        const [publicProfiles] = await Promise.all([
-          api.profiles({ limit: 100 }),
-        ]);
-        if (active) setProfiles(publicProfiles);
-        if (!api.hasSession()) return;
-
-        const currentUser = await api.me();
-        if (!active) return;
-        setUser(currentUser);
-        const [profile, userRequests, favorites] = await Promise.all([
-          currentUser.role === "freelancer" ? api.myProfile() : null,
-          api.requests(),
-          api.saved(),
-        ]);
-        if (!active) return;
-        setMyProfile(profile);
-        setRequests(userRequests);
-        setSavedIds(favorites);
-      } catch (error) {
-        if (!active) return;
-        if (error.status === 401) api.clearSession();
-        setToast(`Could not load KaziLink data: ${error.message}`);
-      }
-    };
-    load();
-    return () => {
-      active = false;
-    };
-  }, []);
-  useEffect(() => {
-    if (view !== "search") return undefined;
-    let active = true;
-    const filters = {
-      q: query,
-      category: filter.category,
-      subcategory: filter.subcategory,
-      location: filter.location,
-      budget: filter.budget,
-      availability: filter.availability,
-      language: filter.language,
-      mpesa: filter.mpesa,
-      experience: filter.experience,
-      verified: filter.verified ? "true" : "",
-      sort: filter.sort,
-      limit: 100,
-    };
-    api.profiles(filters)
-      .then((items) => {
-        if (active) setProfiles(items);
-      })
-      .catch((error) => {
-        if (active) setToast(`Could not search freelancers: ${error.message}`);
-      });
-    return () => {
-      active = false;
-    };
-  }, [view, query, filter]);
-  useEffect(() => {
-    if (view !== "profile" || !selected?.id) return undefined;
-    let active = true;
-    api.reviews(selected.id)
-      .then((items) => {
-        if (active) setReviews(items);
-      })
-      .catch((error) => {
-        if (active) setToast(`Could not load reviews: ${error.message}`);
-      });
-    return () => {
-      active = false;
-    };
-  }, [view, selected?.id]);
+  useEffect(() => storage.set("profiles", profiles), [profiles]);
+  useEffect(() => storage.set("requests", requests), [requests]);
+  useEffect(() => storage.set("reviews", reviews), [reviews]);
+  useEffect(() => storage.set("users", users), [users]);
+  useEffect(() => storage.set("user", user), [user]);
+  useEffect(() => storage.set("saved", savedIds), [savedIds]);
   useEffect(() => {
     if (!toast) return;
     const timeout = setTimeout(() => setToast(""), 3400);
@@ -153,23 +106,81 @@ export default function App() {
     setMobileMenu(false);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
-  const openProfile = async (person) => {
-    setSelected(person.name ? person : null);
+  const openProfile = (person) => {
+    setSelected(person);
     setView("profile");
     window.scrollTo({ top: 0, behavior: "smooth" });
-    if (!person.name) {
-      try {
-        setSelected(await api.profile(person.id));
-      } catch (error) {
-        setToast(`Could not load freelancer profile: ${error.message}`);
-      }
-    }
   };
   const activeProfile =
     profiles.find((profile) => profile.id === selected?.id) || selected;
-  const myRequests = user?.role === "owner" ? requests : [];
-  const incomingRequests = user?.role === "freelancer" ? requests : [];
-  const filteredProfiles = profiles;
+  const myProfile = profiles.find((profile) => profile.id === user?.id);
+  const myRequests = requests.filter(
+    (request) => request.clientId === user?.id,
+  );
+  const incomingRequests = requests.filter(
+    (request) => request.freelancerId === user?.id,
+  );
+
+  const filteredProfiles = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    let matching = profiles.filter((profile) => {
+      const searchable = [
+        profile.name,
+        profile.role,
+        profile.service,
+        profile.category,
+        ...(profile.subcategories || []),
+      ]
+        .join(" ")
+        .toLowerCase();
+      if (needle && !searchable.includes(needle)) return false;
+      if (filter.category && profile.category !== filter.category) return false;
+      if (
+        filter.subcategory &&
+        !(profile.subcategories || []).includes(filter.subcategory) &&
+        profile.service !== filter.subcategory
+      )
+        return false;
+      if (filter.location === "Nairobi" && profile.location !== "Nairobi")
+        return false;
+      if (filter.budget && Number(profile.price) > Number(filter.budget))
+        return false;
+      if (filter.availability && profile.availability !== filter.availability)
+        return false;
+      if (
+        filter.language &&
+        !(profile.languages || []).includes(filter.language)
+      )
+        return false;
+      if (filter.mpesa === "yes" && !profile.acceptsMpesa) return false;
+      if (filter.mpesa === "no" && profile.acceptsMpesa) return false;
+      if (filter.experience && profile.experience !== filter.experience)
+        return false;
+      if (filter.verified && !profile.verified) return false;
+      return true;
+    });
+    if (filter.sort === "rating")
+      matching = [...matching].sort(
+        (a, b) => Number(b.rating) - Number(a.rating),
+      );
+    else if (filter.sort === "recent")
+      matching = [...matching].sort(
+        (a, b) => Number(b.joined || 0) - Number(a.joined || 0),
+      );
+    else if (needle)
+      matching = [...matching].sort(
+        (a, b) =>
+          Number(
+            b.name.toLowerCase().includes(needle) ||
+              b.service.toLowerCase().includes(needle),
+          ) -
+          Number(
+            a.name.toLowerCase().includes(needle) ||
+              a.service.toLowerCase().includes(needle),
+          ),
+      );
+    return matching;
+  }, [profiles, query, filter]);
 
   const startRequest = (profile) => {
     if (!user) {
@@ -185,163 +196,179 @@ export default function App() {
     }
     setRequestTarget(profile);
   };
-  const toggleSaved = async (id) => {
+  const toggleSaved = (id) => {
     if (!user) {
       setToast("Create a free account to save your favourite freelancers.");
       setAuthRole("owner");
       setAuthOpen(true);
       return;
     }
-    try {
-      const result = await api.toggleSaved(id);
-      setSavedIds(result.profileIds);
-      setToast(
-        result.saved
-          ? "Freelancer saved for later."
-          : "Removed from your saved freelancers.",
-      );
-    } catch (error) {
-      setToast(`Could not update saved freelancers: ${error.message}`);
-    }
+    setSavedIds((current) =>
+      current.includes(id)
+        ? current.filter((savedId) => savedId !== id)
+        : [...current, id],
+    );
+    setToast(
+      savedIds.includes(id)
+        ? "Removed from your saved freelancers."
+        : "Freelancer saved for later.",
+    );
   };
-  const loadAccountData = async (account) => {
-    const [profile, accountRequests, favorites] = await Promise.all([
-      account.role === "freelancer" ? api.myProfile() : null,
-      api.requests(),
-      account.role === "owner" ? api.saved() : [],
-    ]);
-    setMyProfile(profile);
-    setRequests(accountRequests);
-    setSavedIds(favorites);
-    if (profile) {
-      setProfiles((current) => [
-        ...current.filter((item) => item.id !== profile.id),
-        profile,
-      ]);
-    }
+  const changeRequestStatus = (requestId, status) => {
+    setRequests((current) =>
+      current.map((request) =>
+        request.id === requestId ? { ...request, status } : request,
+      ),
+    );
+    setToast(
+      status === "accepted"
+        ? "Request accepted. The business owner will see the update."
+        : status === "declined"
+          ? "Request declined."
+          : "Job marked as complete.",
+    );
   };
-  const changeRequestStatus = async (requestId, status) => {
-    try {
-      const updated = await api.updateRequest(requestId, status);
-      setRequests((current) =>
-        current.map((request) => (request.id === requestId ? updated : request)),
-      );
-      setToast(
-        status === "accepted"
-          ? "Request accepted. The business owner will see the update."
-          : status === "declined"
-            ? "Request declined."
-            : "Job marked as complete.",
-      );
-    } catch (error) {
-      setToast(`Could not update the request: ${error.message}`);
-    }
+  const saveProfile = (updated) => {
+    setProfiles((current) =>
+      current.map((profile) =>
+        profile.id === updated.id ? { ...profile, ...updated } : profile,
+      ),
+    );
+    setToast("Your profile has been updated.");
   };
-  const saveProfile = async (updated) => {
-    try {
-      const savedProfile = await api.updateProfile(updated);
-      setMyProfile(savedProfile);
-      setProfiles((current) => {
-        const found = current.some((profile) => profile.id === savedProfile.id);
-        return found
-          ? current.map((profile) =>
-              profile.id === savedProfile.id ? savedProfile : profile,
-            )
-          : [...current, savedProfile];
-      });
-      setToast("Your profile has been updated.");
-    } catch (error) {
-      setToast(`Could not save your profile: ${error.message}`);
-    }
-  };
-  const completeAuth = async (event) => {
+  const completeAuth = (event) => {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
     const identity = String(data.get("identity") || "").trim();
-    try {
-      const currentUser =
-        authMode === "signup"
-          ? await api.register({
-              identity,
-              name: String(data.get("name") || "").trim(),
-              password: String(data.get("password") || ""),
-              role: authRole,
-            })
-          : await api.login({
-              identity,
-              password: String(data.get("password") || ""),
-            });
-      setUser(currentUser);
-      let accountLoadError = "";
-      try {
-        await loadAccountData(currentUser);
-      } catch (error) {
-        accountLoadError = error.message;
-      }
-      setAuthOpen(false);
+    const isEmail = identity.includes("@");
+    let currentUser = users.find(
+      (item) => item.email === identity || item.phone === identity,
+    );
+    if (authMode === "login" && !currentUser) {
       setToast(
-        accountLoadError
-          ? `Signed in, but account data could not load: ${accountLoadError}`
-          : `Karibu, ${currentUser.name.split(" ")[0]}!`,
+        "We couldn’t find that account. Create a new account to get started.",
       );
-      if (pendingFreelancerId && currentUser.role === "owner") {
-        setRequestTarget(
-          profiles.find((profile) => profile.id === pendingFreelancerId),
-        );
-        setPendingFreelancerId(null);
-      } else if (pendingFreelancerId) {
-        setPendingFreelancerId(null);
-        setToast("Sign in as a business owner to send a job request.");
-        navigate("dashboard");
-      } else navigate("dashboard");
-    } catch (error) {
-      setToast(`Could not sign in: ${error.message}`);
+      return;
     }
-  };
-  const submitRequest = async (event) => {
-    event.preventDefault();
-    const data = new FormData(event.currentTarget);
-    try {
-      const request = await api.createRequest({
-        freelancerId: requestTarget.id,
-        service: String(data.get("service")),
-        description: String(data.get("description")),
-        budget: Number(data.get("budget")),
-        deadline: String(data.get("deadline")),
-        location: String(data.get("location")),
-      });
-      setRequests((current) => [request, ...current]);
-      setRequestTarget(null);
+    if (authMode === "signup" || !currentUser) {
+      const name = String(data.get("name") || "").trim();
+      currentUser = {
+        id: `u-${Date.now()}`,
+        name,
+        role: authRole,
+        email: isEmail ? identity : "",
+        phone: isEmail ? "" : identity,
+        location: "Nairobi",
+        languages: ["English", "Kiswahili"],
+        verified: false,
+      };
+      setUsers((current) => [...current, currentUser]);
+      if (currentUser.role === "freelancer")
+        setProfiles((current) => [
+          ...current,
+          {
+            id: currentUser.id,
+            name,
+            role: "Digital freelancer",
+            service: "Digital services",
+            category: "Design and Creative",
+            subcategories: [],
+            price: 2500,
+            rating: 0,
+            reviews: 0,
+            location: currentUser.location,
+            languages: currentUser.languages,
+            verified: false,
+            experience: "new",
+            availability: "flexible",
+            acceptsMpesa: true,
+            online: false,
+            bio: "Tell local businesses a little about what you do and how you can help.",
+            avatar: "",
+            portfolio: [],
+            joined: 11,
+          },
+        ]);
+    }
+    setUser(currentUser);
+    setAuthOpen(false);
+    setToast(`Karibu, ${currentUser.name.split(" ")[0]}!`);
+    if (pendingFreelancerId && currentUser.role === "owner") {
+      setRequestTarget(
+        profiles.find((profile) => profile.id === pendingFreelancerId),
+      );
+      setPendingFreelancerId(null);
+    } else if (pendingFreelancerId) {
+      setPendingFreelancerId(null);
+      setToast("Sign in as a business owner to send a job request.");
       navigate("dashboard");
-      setToast("Job request sent. You’ll see updates on your dashboard.");
-    } catch (error) {
-      setToast(`Could not send your request: ${error.message}`);
-    }
+    } else navigate("dashboard");
   };
-  const submitReview = async (event) => {
+  const submitRequest = (event) => {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
-    try {
-      const review = await api.createReview({
-        requestId: reviewTarget.id,
-        rating: Number(data.get("rating")),
-        comment: String(data.get("comment")).trim(),
-      });
-      setReviews((current) => [review, ...current]);
-      setRequests((current) =>
-        current.map((request) =>
-          request.id === reviewTarget.id
-            ? { ...request, reviewed: true }
-            : request,
-        ),
-      );
-      const updatedProfiles = await api.profiles({ limit: 100 });
-      setProfiles(updatedProfiles);
-      setReviewTarget(null);
-      setToast("Thanks for sharing your experience.");
-    } catch (error) {
-      setToast(`Could not post your review: ${error.message}`);
-    }
+    const request = {
+      id: `job-${Date.now()}`,
+      clientId: user.id,
+      clientName: user.name,
+      freelancerId: requestTarget.id,
+      freelancerName: requestTarget.name,
+      service: String(data.get("service")),
+      description: String(data.get("description")),
+      budget: Number(data.get("budget")),
+      deadline: String(data.get("deadline")),
+      location: String(data.get("location")),
+      status: "pending",
+      createdAt: new Date().toISOString(),
+      reviewed: false,
+    };
+    setRequests((current) => [request, ...current]);
+    setRequestTarget(null);
+    navigate("dashboard");
+    setToast("Job request sent. You’ll see updates on your dashboard.");
+  };
+  const submitReview = (event) => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    const rating = Number(data.get("rating"));
+    const review = {
+      id: `review-${Date.now()}`,
+      freelancerId: reviewTarget.freelancerId,
+      client: user.name,
+      rating,
+      comment: String(data.get("comment")).trim(),
+      date: new Date().toLocaleDateString("en-KE", {
+        month: "short",
+        year: "numeric",
+      }),
+    };
+    setReviews((current) => [review, ...current]);
+    setRequests((current) =>
+      current.map((request) =>
+        request.id === reviewTarget.id
+          ? { ...request, reviewed: true }
+          : request,
+      ),
+    );
+    setProfiles((current) =>
+      current.map((profile) =>
+        profile.id === reviewTarget.freelancerId
+          ? {
+              ...profile,
+              rating: Number(
+                (
+                  (Number(profile.rating || 0) * Number(profile.reviews || 0) +
+                    rating) /
+                  (Number(profile.reviews || 0) + 1)
+                ).toFixed(1),
+              ),
+              reviews: Number(profile.reviews || 0) + 1,
+            }
+          : profile,
+      ),
+    );
+    setReviewTarget(null);
+    setToast("Thanks for sharing your experience.");
   };
 
   return (
@@ -400,23 +427,10 @@ export default function App() {
                 <button
                   className="logout-button"
                   title="Sign out"
-                  onClick={async () => {
-                    let logoutError;
-                    try {
-                      await api.logout();
-                    } catch (error) {
-                      logoutError = error;
-                    }
+                  onClick={() => {
                     setUser(null);
-                    setMyProfile(null);
-                    setRequests([]);
-                    setSavedIds([]);
                     navigate("home");
-                    setToast(
-                      logoutError
-                        ? `Signed out locally; server logout failed: ${logoutError.message}`
-                        : "You’re signed out.",
-                    );
+                    setToast("You’re signed out.");
                   }}
                 >
                   <Icon name="logout" size={17} />
