@@ -63,18 +63,21 @@ and review aggregates are not client-editable. Admin checks use a
 
 - `id uuid primary key`
 - `client_id uuid not null references profiles(id) on delete cascade`
+- `client_name text not null` (captured from the profile by a database trigger)
 - `freelancer_id uuid not null references profiles(id) on delete cascade`
+- `freelancer_name text not null` (captured from the profile by a database trigger)
 - `service text not null`, `description text not null`
 - `budget numeric(12,2) not null check (budget > 0)`
 - `deadline date not null`, `location text not null`
 - `status text not null check (status in ('pending', 'accepted', 'declined', 'completed'))`
-- `reviewed boolean not null default false`
 - `created_at`, `updated_at` timestamps
 
 The client creates the request. Only its designated freelancer can move status
 from pending to accepted/declined, then accepted to completed. Both parties can
 read it; unrelated users cannot. A uniqueness/check trigger prevents
-self-requests and invalid state changes.
+self-requests and invalid state changes. The UI's `reviewed` flag is derived
+from the presence of the request's unique `reviews` row rather than stored
+separately.
 
 ### `saved_profiles`
 
@@ -90,6 +93,7 @@ Each user can list, add, or remove only their own saved profiles.
 - `id uuid primary key`
 - `request_id uuid not null unique references job_requests(id) on delete cascade`
 - `client_id uuid not null references profiles(id) on delete cascade`
+- `client_name text not null` (copied from the completed request by a trigger)
 - `freelancer_id uuid not null references profiles(id) on delete cascade`
 - `rating smallint not null check (rating between 1 and 5)`
 - `comment text not null check (length(trim(comment)) >= 10)`
