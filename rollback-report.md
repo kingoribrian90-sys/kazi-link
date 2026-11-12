@@ -19,7 +19,7 @@
   mock data and local UI persistence, retaining the frontend cleanup already
   present before API wiring.
 - Replaced the root README with frontend-only run instructions pending the
-  Supabase setup documentation in the later phases.
+  setup documentation for the active backend.
 
 ## Verification
 

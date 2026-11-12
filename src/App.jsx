@@ -2,7 +2,12 @@ import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { categories } from "./data.js";
 import { Avatar, Brand, Footer, Icon } from "./components/ui.jsx";
 import { AppDialogs } from "./components/AppDialogs.jsx";
-import { supabase } from "./lib/supabaseClient.js";
+import {
+  api,
+  clearAccessToken,
+  getAccessToken,
+  setAccessToken,
+} from "./api/client.js";
 import {
   fetchProfileReviews,
   fetchPublicProfiles,
@@ -41,6 +46,7 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [myProfile, setMyProfile] = useState(null);
   const [authUser, setAuthUser] = useState(null);
+  const [passwordResetToken, setPasswordResetToken] = useState("");
   const [savedIds, setSavedIds] = useState([]);
   const [view, setView] = useState("home");
   const [selected, setSelected] = useState(null);
@@ -70,29 +76,50 @@ export default function App() {
 
   useEffect(() => {
     let active = true;
-    supabase.auth.getSession()
-      .then(({ data, error }) => {
-        if (!active) return;
-        if (error) throw error;
-        setAuthUser(data.session?.user || null);
-      })
-      .catch((error) => {
-        if (active) setToast(`Could not restore your session: ${error.message}`);
-      });
+    const params = new URLSearchParams(window.location.search);
+    const verifyToken = params.get("verifyToken");
+    const resetToken = params.get("resetToken");
+    if (verifyToken || resetToken) {
+      window.history.replaceState(
+        null,
+        "",
+        `${window.location.pathname}${window.location.hash}`,
+      );
+    }
 
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((event, session) => {
-      setAuthUser(session?.user || null);
-      if (event === "PASSWORD_RECOVERY") {
-        setAuthMode("recovery");
-        setAuthOpen(true);
-      }
-    });
+    if (resetToken) {
+      setPasswordResetToken(resetToken);
+      setAuthMode("recovery");
+      setAuthOpen(true);
+    } else if (verifyToken) {
+      api
+        .post("/auth/verify-email", { token: verifyToken })
+        .then((result) => {
+          if (!active) return;
+          setAccessToken(result.token);
+          setAuthUser(result.user);
+          setToast(`Karibu, ${result.user.name.split(" ")[0]}!`);
+        })
+        .catch((error) => {
+          if (active) setToast(`Could not verify your email: ${error.message}`);
+        });
+    } else if (getAccessToken()) {
+      api
+        .get("/auth/me")
+        .then(({ user: accountUser }) => {
+          if (active) setAuthUser(accountUser);
+        })
+        .catch((error) => {
+          if (error.status === 401) clearAccessToken();
+          if (active) {
+            setAuthUser(null);
+            setToast(`Could not restore your session: ${error.message}`);
+          }
+        });
+    }
 
     return () => {
       active = false;
-      subscription.unsubscribe();
     };
   }, []);
   useEffect(() => {
@@ -122,26 +149,15 @@ export default function App() {
 
     const loadAccount = async () => {
       try {
-        const [profileResult, accountRequests, favorites] = await Promise.all([
-          supabase
-            .from("profiles")
-            .select("*")
-            .eq("id", authUser.id)
-            .single(),
+        const [account, accountRequests, favorites] = await Promise.all([
+          api.get("/auth/me"),
           fetchRequests(),
-          fetchSavedProfileIds(authUser.id),
+          fetchSavedProfileIds(),
         ]);
-        if (profileResult.error) throw profileResult.error;
         if (!active) return;
 
-        const profile = profileResult.data;
-        setUser({
-          id: profile.id,
-          name: profile.name,
-          role: profile.role,
-          email: authUser.email,
-          avatar: profile.avatar_url || "",
-        });
+        const profile = account.profile;
+        setUser(account.user);
         const freelancerProfile =
           profile.role === "freelancer" ? mapProfile(profile) : null;
         setMyProfile(freelancerProfile);
@@ -313,19 +329,11 @@ export default function App() {
     }
     try {
       if (savedIds.includes(id)) {
-        const { error } = await supabase
-          .from("saved_profiles")
-          .delete()
-          .eq("user_id", user.id)
-          .eq("profile_id", id);
-        if (error) throw error;
+        await api.delete(`/saved-profiles/${encodeURIComponent(id)}`);
         setSavedIds((current) => current.filter((savedId) => savedId !== id));
         setToast("Removed from your saved freelancers.");
       } else {
-        const { error } = await supabase
-          .from("saved_profiles")
-          .insert({ user_id: user.id, profile_id: id });
-        if (error) throw error;
+        await api.post(`/saved-profiles/${encodeURIComponent(id)}`);
         setSavedIds((current) => [...current, id]);
         setToast("Freelancer saved for later.");
       }
@@ -335,14 +343,10 @@ export default function App() {
   };
   const changeRequestStatus = async (requestId, status) => {
     try {
-      const { data, error } = await supabase
-        .from("job_requests")
-        .update({ status })
-        .eq("id", requestId)
-        .eq("freelancer_id", user.id)
-        .select("*")
-        .single();
-      if (error) throw error;
+      const data = await api.patch(
+        `/requests/${encodeURIComponent(requestId)}/status`,
+        { status },
+      );
       setRequests((current) =>
         current.map((request) =>
           request.id === requestId
@@ -363,28 +367,22 @@ export default function App() {
   };
   const saveProfile = async (updated) => {
     try {
-      const { data, error } = await supabase
-        .from("profiles")
-        .update({
-          name: updated.name,
-          title: updated.role,
-          service: updated.service,
-          category: updated.category,
-          subcategories: updated.subcategories,
-          price: updated.price,
-          location: updated.location,
-          languages: updated.languages,
-          availability: updated.availability,
-          accepts_mpesa: updated.acceptsMpesa,
-          online: updated.online,
-          bio: updated.bio,
-          avatar_url: updated.avatar,
-          portfolio: updated.portfolio,
-        })
-        .eq("id", user.id)
-        .select("*")
-        .single();
-      if (error) throw error;
+      const data = await api.patch("/profiles/me", {
+        name: updated.name,
+        title: updated.role,
+        service: updated.service,
+        category: updated.category,
+        subcategories: updated.subcategories,
+        price: updated.price,
+        location: updated.location,
+        languages: updated.languages || myProfile?.languages || [],
+        availability: updated.availability,
+        acceptsMpesa: updated.acceptsMpesa,
+        online: updated.online,
+        bio: updated.bio,
+        avatar: updated.avatar,
+        portfolio: updated.portfolio,
+      });
       const savedProfile = mapProfile(data);
       setMyProfile(savedProfile);
       setProfiles((current) =>
@@ -408,11 +406,12 @@ export default function App() {
     const password = String(data.get("password") || "");
     try {
       if (authMode === "login") {
-        const { error } = await supabase.auth.signInWithPassword({
+        const result = await api.post("/auth/login", {
           email,
           password,
         });
-        if (error) throw error;
+        setAccessToken(result.token);
+        setAuthUser(result.user);
         setAuthOpen(false);
         navigate("dashboard");
         setToast("Welcome back to KaziLink.");
@@ -420,23 +419,15 @@ export default function App() {
       }
 
       const name = String(data.get("name") || "").trim();
-      const { data: result, error } = await supabase.auth.signUp({
+      const result = await api.post("/auth/register", {
+        name,
         email,
         password,
-        options: {
-          data: { name, role: authRole },
-          emailRedirectTo: window.location.origin,
-        },
+        role: authRole,
       });
-      if (error) throw error;
       setAuthOpen(false);
-      if (!result.session) {
-        setAuthMode("login");
-        setToast("Check your email to confirm your KaziLink account.");
-        return;
-      }
-      navigate("dashboard");
-      setToast(`Karibu, ${name.split(" ")[0]}!`);
+      setAuthMode("login");
+      setToast(result.message);
     } catch (error) {
       setToast(`Could not ${authMode === "login" ? "log in" : "sign up"}: ${error.message}`);
     }
@@ -446,12 +437,9 @@ export default function App() {
     const data = new FormData(event.currentTarget);
     const email = String(data.get("identity") || "").trim().toLowerCase();
     try {
-      const { error } = await supabase.auth.resetPasswordForEmail(email, {
-        redirectTo: window.location.origin,
-      });
-      if (error) throw error;
+      const result = await api.post("/auth/password-reset/request", { email });
       setAuthMode("login");
-      setToast("If an account exists for that email, a reset link is on its way.");
+      setToast(result.message);
     } catch (error) {
       setToast(`Could not send a password reset email: ${error.message}`);
     }
@@ -461,19 +449,22 @@ export default function App() {
     const data = new FormData(event.currentTarget);
     const password = String(data.get("password") || "");
     try {
-      const { error } = await supabase.auth.updateUser({ password });
-      if (error) throw error;
+      const result = await api.post("/auth/password-reset/confirm", {
+        token: passwordResetToken,
+        password,
+      });
+      setPasswordResetToken("");
       setAuthOpen(false);
       setAuthMode("login");
-      setToast("Your password has been updated.");
+      setToast(result.message);
     } catch (error) {
       setToast(`Could not update your password: ${error.message}`);
     }
   };
   const logout = async () => {
     try {
-      const { error } = await supabase.auth.signOut();
-      if (error) throw error;
+      clearAccessToken();
+      setAuthUser(null);
       navigate("home");
       setToast("You’re signed out.");
     } catch (error) {
@@ -484,20 +475,14 @@ export default function App() {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
     try {
-      const { data: request, error } = await supabase
-        .from("job_requests")
-        .insert({
-          client_id: user.id,
-          freelancer_id: requestTarget.id,
-          service: String(data.get("service")),
-          description: String(data.get("description")),
-          budget: Number(data.get("budget")),
-          deadline: String(data.get("deadline")),
-          location: String(data.get("location")),
-        })
-        .select("*")
-        .single();
-      if (error) throw error;
+      const request = await api.post("/requests", {
+        freelancerId: requestTarget.id,
+        service: String(data.get("service")),
+        description: String(data.get("description")),
+        budget: Number(data.get("budget")),
+        deadline: String(data.get("deadline")),
+        location: String(data.get("location")),
+      });
       setRequests((current) => [mapRequest(request), ...current]);
       setRequestTarget(null);
       navigate("dashboard");
@@ -511,18 +496,13 @@ export default function App() {
     const data = new FormData(event.currentTarget);
     const rating = Number(data.get("rating"));
     try {
-      const { data: review, error } = await supabase
-        .from("reviews")
-        .insert({
-          request_id: reviewTarget.id,
-          client_id: user.id,
-          freelancer_id: reviewTarget.freelancerId,
+      const review = await api.post(
+        `/requests/${encodeURIComponent(reviewTarget.id)}/review`,
+        {
           rating,
           comment: String(data.get("comment")).trim(),
-        })
-        .select("*")
-        .single();
-      if (error) throw error;
+        },
+      );
       setReviews((current) => [mapReview(review), ...current]);
       setRequests((current) =>
         current.map((request) =>

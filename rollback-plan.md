@@ -39,8 +39,8 @@ storage implementation.
   existing mock freelancer/review data and local UI persistence. This file's
   changes in the MERN commit are API wiring; restoring the preceding version
   preserves the earlier frontend cleanup.
-- Replace the MERN setup and API instructions in root `README.md`. The final
-  Supabase setup instructions will be completed with the Supabase implementation.
+- Replace the MERN setup and API instructions in root `README.md` with the
+  setup instructions for the active backend.
 - Remove only the `backend/.env` ignore entry from `.gitignore`; retain general
   frontend environment-file, dependency, and build-output ignores.
 

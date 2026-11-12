@@ -1,139 +1,111 @@
 # KaziLink
 
-KaziLink connects Kenyan businesses with digital freelancers. The frontend is a
-Vite/React application; Supabase provides Postgres, Auth, and the Data API.
+KaziLink connects Kenyan businesses with digital freelancers. The frontend is
+React with Vite; the API is Node.js and Express; MySQL stores accounts and
+marketplace data.
 
 ## Requirements
 
-- Node.js 20.19+ and npm
-- Docker Desktop for the local Supabase stack
-- A Supabase project for deployment
+- Node.js 20+ and npm
+- MySQL Server 8.0.16+ and MySQL Workbench
+- An SMTP account for signup verification and password reset emails
 
-## Configure the frontend
+## MySQL Workbench
 
-Copy the example file and fill in the two browser-safe values:
+1. Start MySQL Server and connect to it from Workbench.
+2. Open `server/database/schema.sql` in Workbench and execute it. It creates
+   and selects the `kazilink` database.
+3. For local demo accounts, execute `server/database/seed.sql` after the schema.
+   The seeded accounts use the password `password`; never use them in production.
+
+The schema includes `users`, `profiles`, `job_requests`, `saved_profiles`,
+`reviews`, and `auth_tokens`. The frontend uses external image URLs; there is no
+file-upload feature.
+
+## Configure and run the API
+
+From PowerShell:
+
+```powershell
+Set-Location server
+Copy-Item .env.example .env
+npm install
+```
+
+Edit `server/.env` with your MySQL connection values. Set `JWT_SECRET` to a
+random value generated with:
+
+```powershell
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
+Fill in `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, and `SMTP_FROM`.
+SMTP is required for registration, email verification, and password recovery.
+Keep `server/.env` private; it is ignored by Git.
+
+Start the API from the `server` directory:
+
+```powershell
+npm run dev
+```
+
+The default API URL is `http://localhost:3001/api`. Verify MySQL connectivity:
+
+```powershell
+curl.exe http://localhost:3001/api/health
+```
+
+## Configure and run the frontend
+
+From the repository root, in another terminal:
 
 ```powershell
 Copy-Item .env.example .env.local
-```
-
-- `VITE_SUPABASE_URL`: the Project URL shown in Supabase project settings
-- `VITE_SUPABASE_PUBLISHABLE_KEY`: the project's publishable key (legacy
-  projects may call it the anon key)
-
-To retrieve the project's API keys locally, run:
-
-```powershell
-npx supabase projects api-keys --project-ref <project-ref>
-```
-
-Copy only the publishable/anon key into `.env.local`. Never use a secret or
-service-role key in a `VITE_` variable, source file, or browser build. No
-service-role key is needed for this project.
-
-## Run locally
-
-Start a local Supabase stack and apply migrations plus sample data:
-
-```powershell
-npx supabase start
-npx supabase db reset
-```
-
-`db reset` resets the **local** Supabase database and reapplies migrations and
-`supabase/seed.sql`; do not use it against a remote project. Local API URL and
-publishable key are shown by `npx supabase status`. The local Studio is at
-`http://127.0.0.1:54323`, and the local email inbox for confirmation/reset
-messages is at `http://127.0.0.1:54324`.
-
-In another terminal:
-
-```powershell
 npm install
 npm run dev
 ```
 
-The local seed includes ten freelancer profiles and these demo accounts:
+`.env.example` sets `VITE_API_URL` to `http://localhost:3001/api`. Change it for
+another API host and set `CLIENT_URL` in `server/.env` to the exact frontend
+origin. Restart Vite after changing `.env.local`.
 
-- `demo-owner@kazilink.local` — password `DemoPass123!`
-- `demo-freelancer@kazilink.local` — password `DemoPass123!`
+The API keeps the short-lived bearer token in `sessionStorage` for the current
+browser tab. Because browser scripts can access it, protect the app from
+cross-site scripting and use HTTPS in deployment.
 
-These credentials and seeded accounts are for local development only.
+## API authorization
 
-## Backend
+MySQL does not provide the previous PostgreSQL row-level policies, so the API
+enforces those checks in authentication middleware and controllers:
 
-Database changes are versioned in
-[`supabase/migrations/`](./supabase/migrations/); do not create or alter schema
-manually in the Dashboard. The schema contains `profiles`, `job_requests`,
-`saved_profiles`, and `reviews`, with RLS enabled and explicit policies for
-each table. Auth signup creates a profile through a database trigger; admin
-checks use `public.is_admin()`.
+- **Profiles:** public reads expose freelancer profiles; authenticated users
+  can read their own profile. Only freelancers can update their profile, and
+  role, verification, rating, and review totals are not user-editable. Admin
+  account roles are never accepted during registration. No admin profile
+  management route is exposed because the app has no admin UI.
+- **Job requests:** users can list only requests where they are a participant;
+  admins can list all. Only owners can create pending requests to a freelancer.
+  The assigned freelancer can move a request from pending to accepted/declined,
+  then from accepted to completed; admins can perform the same valid transitions.
+  Request details cannot be edited afterward.
+- **Saved profiles:** each user can list, add, or remove only their own saved
+  freelancer profiles.
+- **Reviews:** reviews are publicly readable. Only the client on a completed
+  request can create its one review; admins can moderate completed requests.
+  The API updates the freelancer's rating and review count in the same
+  transaction.
 
-The browser uses the single Supabase client in
-[`src/lib/supabaseClient.js`](./src/lib/supabaseClient.js). Marketplace CRUD
-uses the signed-in user's session and RLS. Portfolio samples remain URL-based;
-there is no upload flow, Storage bucket, Edge Function, integration secret, or
-Realtime subscription in the current feature set.
+## Migrating existing hosted PostgreSQL data
 
-## Deploy
+Export `profiles`, `job_requests`, `saved_profiles`, and `reviews` as CSV from
+the current database dashboard. Preserve the existing UUIDs and import users
+first so the foreign keys in the other tables continue to match. In Workbench,
+right-click the destination table, choose **Table Data Import Wizard**, select
+the CSV, map its columns, and complete the import in dependency order:
+`users`, `profiles`, `job_requests`, `saved_profiles`, then `reviews`.
 
-1. Add `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` to the frontend
-   deployment environment (for example, Netlify), then build with `npm run build`.
-2. Set the Supabase Auth Site URL to the deployed frontend URL and allow that
-   URL as an email confirmation/password recovery redirect. Configure an
-   appropriate SMTP provider for production Auth email.
-3. After reviewing the migration and confirming the target project, link and
-   apply the schema:
-
-   ```powershell
-   npx supabase login
-   npx supabase link --project-ref <project-ref>
-   npx supabase db push
-   ```
-
-`db push` changes the linked remote schema; review and back up the target before
-running it. The Supabase project is not linked or changed by this repository
-setup. There are currently no Edge Functions or function secrets to deploy or
-set; add `npx supabase functions deploy` / `npx supabase secrets set` only if a
-future requested feature needs them.
-
-## Security checks
-
-After local migrations are applied, verify every public table has RLS enabled
-and at least one policy:
-
-```sql
-select
-  t.tablename,
-  t.rowsecurity,
-  count(p.policyname) as policy_count
-from pg_tables as t
-left join pg_policies as p
-  on p.schemaname = t.schemaname
-  and p.tablename = t.tablename
-where t.schemaname = 'public'
-group by t.tablename, t.rowsecurity
-order by t.tablename;
-```
-
-There are no Storage buckets because the current frontend has no upload flow.
-After a production build, verify no service-role/secret key entered the client:
-
-```powershell
-npm run build
-rg -n -i "service_role|sb_secret_|SUPABASE_SERVICE_ROLE_KEY" src dist
-```
-
-## Assumptions
-
-- Authentication is email/password with email confirmation and password reset.
-  The former mock phone-number login is not enabled because no SMS provider was
-  requested or configured.
-- The freelancer role is selected during signup; `admin` is assigned only by a
-  trusted project operator and cannot be requested from the browser.
-- No payment, M-Pesa transaction, messaging, contact-form, or third-party
-  integration was listed. M-Pesa remains a freelancer profile attribute only.
-- Existing portfolio URLs remain external URLs. No Storage bucket or upload
-  policy is created.
-- Existing browser-only mock records are not migrated. Local Supabase seed data
-  replaces them for development; data is stored in Supabase after signup.
+The old auth system does not provide users' plaintext passwords for export.
+Do not copy or reuse password hashes from an auth-provider table. Create
+accounts with newly generated bcrypt hashes and send password-reset emails, or
+have users register again. Do not run the demo seed against an imported
+production database.
