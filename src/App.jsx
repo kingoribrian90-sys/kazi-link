@@ -1,7 +1,22 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
-import { categories, seedFreelancers, seedReviews } from "./data.js";
+import { categories } from "./data.js";
 import { Avatar, Brand, Footer, Icon } from "./components/ui.jsx";
 import { AppDialogs } from "./components/AppDialogs.jsx";
+import {
+  api,
+  clearAccessToken,
+  getAccessToken,
+  setAccessToken,
+} from "./api/client.js";
+import {
+  fetchProfileReviews,
+  fetchPublicProfiles,
+  fetchRequests,
+  fetchSavedProfileIds,
+  mapProfile,
+  mapRequest,
+  mapReview,
+} from "./lib/marketplace.js";
 
 const DashboardPage = lazy(() =>
   import("./pages/DashboardPage.jsx").then((module) => ({
@@ -24,35 +39,15 @@ const SearchPage = lazy(() =>
   })),
 );
 
-const storage = {
-  get(key, fallback) {
-    try {
-      const value = localStorage.getItem(`kazilink-${key}`);
-      return value ? JSON.parse(value) : fallback;
-    } catch {
-      return fallback;
-    }
-  },
-  set(key, value) {
-    try {
-      localStorage.setItem(`kazilink-${key}`, JSON.stringify(value));
-    } catch {
-      /* local storage may be unavailable */
-    }
-  },
-};
-
 export default function App() {
-  const [profiles, setProfiles] = useState(() =>
-    storage.get("profiles", seedFreelancers),
-  );
-  const [requests, setRequests] = useState(() => storage.get("requests", []));
-  const [reviews, setReviews] = useState(() =>
-    storage.get("reviews", seedReviews),
-  );
-  const [users, setUsers] = useState(() => storage.get("users", []));
-  const [user, setUser] = useState(() => storage.get("user", null));
-  const [savedIds, setSavedIds] = useState(() => storage.get("saved", []));
+  const [profiles, setProfiles] = useState([]);
+  const [requests, setRequests] = useState([]);
+  const [reviews, setReviews] = useState([]);
+  const [user, setUser] = useState(null);
+  const [myProfile, setMyProfile] = useState(null);
+  const [authUser, setAuthUser] = useState(null);
+  const [passwordResetToken, setPasswordResetToken] = useState("");
+  const [savedIds, setSavedIds] = useState([]);
   const [view, setView] = useState("home");
   const [selected, setSelected] = useState(null);
   const [query, setQuery] = useState("");
@@ -79,12 +74,142 @@ export default function App() {
   const [toast, setToast] = useState("");
   const [mobileMenu, setMobileMenu] = useState(false);
 
-  useEffect(() => storage.set("profiles", profiles), [profiles]);
-  useEffect(() => storage.set("requests", requests), [requests]);
-  useEffect(() => storage.set("reviews", reviews), [reviews]);
-  useEffect(() => storage.set("users", users), [users]);
-  useEffect(() => storage.set("user", user), [user]);
-  useEffect(() => storage.set("saved", savedIds), [savedIds]);
+  useEffect(() => {
+    let active = true;
+    const params = new URLSearchParams(window.location.search);
+    const verifyToken = params.get("verifyToken");
+    const resetToken = params.get("resetToken");
+    if (verifyToken || resetToken) {
+      window.history.replaceState(
+        null,
+        "",
+        `${window.location.pathname}${window.location.hash}`,
+      );
+    }
+
+    if (resetToken) {
+      setPasswordResetToken(resetToken);
+      setAuthMode("recovery");
+      setAuthOpen(true);
+    } else if (verifyToken) {
+      api
+        .post("/auth/verify-email", { token: verifyToken })
+        .then((result) => {
+          if (!active) return;
+          setAccessToken(result.token);
+          setAuthUser(result.user);
+          setToast(`Karibu, ${result.user.name.split(" ")[0]}!`);
+        })
+        .catch((error) => {
+          if (active) setToast(`Could not verify your email: ${error.message}`);
+        });
+    } else if (getAccessToken()) {
+      api
+        .get("/auth/me")
+        .then(({ user: accountUser }) => {
+          if (active) setAuthUser(accountUser);
+        })
+        .catch((error) => {
+          if (error.status === 401) clearAccessToken();
+          if (active) {
+            setAuthUser(null);
+            setToast(`Could not restore your session: ${error.message}`);
+          }
+        });
+    }
+
+    return () => {
+      active = false;
+    };
+  }, []);
+  useEffect(() => {
+    let active = true;
+    fetchPublicProfiles()
+      .then((items) => {
+        if (active) setProfiles(items);
+      })
+      .catch((error) => {
+        if (active) setToast(`Could not load freelancers: ${error.message}`);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+  useEffect(() => {
+    let active = true;
+    if (!authUser) {
+      setUser(null);
+      setMyProfile(null);
+      setRequests([]);
+      setSavedIds([]);
+      return () => {
+        active = false;
+      };
+    }
+
+    const loadAccount = async () => {
+      try {
+        const [account, accountRequests, favorites] = await Promise.all([
+          api.get("/auth/me"),
+          fetchRequests(),
+          fetchSavedProfileIds(),
+        ]);
+        if (!active) return;
+
+        const profile = account.profile;
+        setUser(account.user);
+        const freelancerProfile =
+          profile.role === "freelancer" ? mapProfile(profile) : null;
+        setMyProfile(freelancerProfile);
+        if (freelancerProfile) {
+          setProfiles((current) => {
+            const exists = current.some((item) => item.id === profile.id);
+            return exists
+              ? current.map((item) =>
+                  item.id === profile.id ? freelancerProfile : item,
+                )
+              : [freelancerProfile, ...current];
+          });
+        }
+        setRequests(accountRequests);
+        setSavedIds(favorites);
+      } catch (error) {
+        if (active) setToast(`Could not load your account: ${error.message}`);
+      }
+    };
+    loadAccount();
+    return () => {
+      active = false;
+    };
+  }, [authUser]);
+  useEffect(() => {
+    if (view !== "profile" || !selected?.id) return undefined;
+    let active = true;
+    fetchProfileReviews(selected.id)
+      .then((items) => {
+        if (active) setReviews(items);
+      })
+      .catch((error) => {
+        if (active) setToast(`Could not load reviews: ${error.message}`);
+      });
+    return () => {
+      active = false;
+    };
+  }, [view, selected?.id]);
+  useEffect(() => {
+    if (!user || !pendingFreelancerId) return;
+    if (user.role === "owner") {
+      const target = profiles.find(
+        (profile) => profile.id === pendingFreelancerId,
+      );
+      if (!target) return;
+      setRequestTarget(target);
+    } else {
+      setToast("Sign in as a business owner to send a job request.");
+      navigate("dashboard");
+    }
+    setPendingFreelancerId(null);
+  }, [user, pendingFreelancerId, profiles]);
   useEffect(() => {
     if (!toast) return;
     const timeout = setTimeout(() => setToast(""), 3400);
@@ -113,7 +238,6 @@ export default function App() {
   };
   const activeProfile =
     profiles.find((profile) => profile.id === selected?.id) || selected;
-  const myProfile = profiles.find((profile) => profile.id === user?.id);
   const myRequests = requests.filter(
     (request) => request.clientId === user?.id,
   );
@@ -196,179 +320,218 @@ export default function App() {
     }
     setRequestTarget(profile);
   };
-  const toggleSaved = (id) => {
+  const toggleSaved = async (id) => {
     if (!user) {
       setToast("Create a free account to save your favourite freelancers.");
       setAuthRole("owner");
       setAuthOpen(true);
       return;
     }
-    setSavedIds((current) =>
-      current.includes(id)
-        ? current.filter((savedId) => savedId !== id)
-        : [...current, id],
-    );
-    setToast(
-      savedIds.includes(id)
-        ? "Removed from your saved freelancers."
-        : "Freelancer saved for later.",
-    );
+    try {
+      if (savedIds.includes(id)) {
+        await api.delete(`/saved-profiles/${encodeURIComponent(id)}`);
+        setSavedIds((current) => current.filter((savedId) => savedId !== id));
+        setToast("Removed from your saved freelancers.");
+      } else {
+        await api.post(`/saved-profiles/${encodeURIComponent(id)}`);
+        setSavedIds((current) => [...current, id]);
+        setToast("Freelancer saved for later.");
+      }
+    } catch (error) {
+      setToast(`Could not update your saved freelancers: ${error.message}`);
+    }
   };
-  const changeRequestStatus = (requestId, status) => {
-    setRequests((current) =>
-      current.map((request) =>
-        request.id === requestId ? { ...request, status } : request,
-      ),
-    );
-    setToast(
-      status === "accepted"
-        ? "Request accepted. The business owner will see the update."
-        : status === "declined"
-          ? "Request declined."
-          : "Job marked as complete.",
-    );
-  };
-  const saveProfile = (updated) => {
-    setProfiles((current) =>
-      current.map((profile) =>
-        profile.id === updated.id ? { ...profile, ...updated } : profile,
-      ),
-    );
-    setToast("Your profile has been updated.");
-  };
-  const completeAuth = (event) => {
-    event.preventDefault();
-    const data = new FormData(event.currentTarget);
-    const identity = String(data.get("identity") || "").trim();
-    const isEmail = identity.includes("@");
-    let currentUser = users.find(
-      (item) => item.email === identity || item.phone === identity,
-    );
-    if (authMode === "login" && !currentUser) {
+  const changeRequestStatus = async (requestId, status) => {
+    try {
+      const data = await api.patch(
+        `/requests/${encodeURIComponent(requestId)}/status`,
+        { status },
+      );
+      setRequests((current) =>
+        current.map((request) =>
+          request.id === requestId
+            ? mapRequest(data, request.reviewed)
+            : request,
+        ),
+      );
       setToast(
-        "We couldn’t find that account. Create a new account to get started.",
+        status === "accepted"
+          ? "Request accepted. The business owner will see the update."
+          : status === "declined"
+            ? "Request declined."
+            : "Job marked as complete.",
       );
-      return;
+    } catch (error) {
+      setToast(`Could not update the request: ${error.message}`);
     }
-    if (authMode === "signup" || !currentUser) {
-      const name = String(data.get("name") || "").trim();
-      currentUser = {
-        id: `u-${Date.now()}`,
-        name,
-        role: authRole,
-        email: isEmail ? identity : "",
-        phone: isEmail ? "" : identity,
-        location: "Nairobi",
-        languages: ["English", "Kiswahili"],
-        verified: false,
-      };
-      setUsers((current) => [...current, currentUser]);
-      if (currentUser.role === "freelancer")
-        setProfiles((current) => [
-          ...current,
-          {
-            id: currentUser.id,
-            name,
-            role: "Digital freelancer",
-            service: "Digital services",
-            category: "Design and Creative",
-            subcategories: [],
-            price: 2500,
-            rating: 0,
-            reviews: 0,
-            location: currentUser.location,
-            languages: currentUser.languages,
-            verified: false,
-            experience: "new",
-            availability: "flexible",
-            acceptsMpesa: true,
-            online: false,
-            bio: "Tell local businesses a little about what you do and how you can help.",
-            avatar: "",
-            portfolio: [],
-            joined: 11,
-          },
-        ]);
-    }
-    setUser(currentUser);
-    setAuthOpen(false);
-    setToast(`Karibu, ${currentUser.name.split(" ")[0]}!`);
-    if (pendingFreelancerId && currentUser.role === "owner") {
-      setRequestTarget(
-        profiles.find((profile) => profile.id === pendingFreelancerId),
-      );
-      setPendingFreelancerId(null);
-    } else if (pendingFreelancerId) {
-      setPendingFreelancerId(null);
-      setToast("Sign in as a business owner to send a job request.");
-      navigate("dashboard");
-    } else navigate("dashboard");
   };
-  const submitRequest = (event) => {
+  const saveProfile = async (updated) => {
+    try {
+      const data = await api.patch("/profiles/me", {
+        name: updated.name,
+        title: updated.role,
+        service: updated.service,
+        category: updated.category,
+        subcategories: updated.subcategories,
+        price: updated.price,
+        location: updated.location,
+        languages: updated.languages || myProfile?.languages || [],
+        availability: updated.availability,
+        acceptsMpesa: updated.acceptsMpesa,
+        online: updated.online,
+        bio: updated.bio,
+        avatar: updated.avatar,
+        portfolio: updated.portfolio,
+      });
+      const savedProfile = mapProfile(data);
+      setMyProfile(savedProfile);
+      setProfiles((current) =>
+        current.some((profile) => profile.id === savedProfile.id)
+          ? current.map((profile) =>
+              profile.id === savedProfile.id ? savedProfile : profile,
+            )
+          : [savedProfile, ...current],
+      );
+      setToast("Your profile has been updated.");
+      return true;
+    } catch (error) {
+      setToast(`Could not update your profile: ${error.message}`);
+      return false;
+    }
+  };
+  const completeAuth = async (event) => {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
-    const request = {
-      id: `job-${Date.now()}`,
-      clientId: user.id,
-      clientName: user.name,
-      freelancerId: requestTarget.id,
-      freelancerName: requestTarget.name,
-      service: String(data.get("service")),
-      description: String(data.get("description")),
-      budget: Number(data.get("budget")),
-      deadline: String(data.get("deadline")),
-      location: String(data.get("location")),
-      status: "pending",
-      createdAt: new Date().toISOString(),
-      reviewed: false,
-    };
-    setRequests((current) => [request, ...current]);
-    setRequestTarget(null);
-    navigate("dashboard");
-    setToast("Job request sent. You’ll see updates on your dashboard.");
+    const email = String(data.get("identity") || "").trim().toLowerCase();
+    const password = String(data.get("password") || "");
+    try {
+      if (authMode === "login") {
+        const result = await api.post("/auth/login", {
+          email,
+          password,
+        });
+        setAccessToken(result.token);
+        setAuthUser(result.user);
+        setAuthOpen(false);
+        navigate("dashboard");
+        setToast("Welcome back to KaziLink.");
+        return;
+      }
+
+      const name = String(data.get("name") || "").trim();
+      const result = await api.post("/auth/register", {
+        name,
+        email,
+        password,
+        role: authRole,
+      });
+      setAuthOpen(false);
+      setAuthMode("login");
+      setToast(result.message);
+    } catch (error) {
+      setToast(`Could not ${authMode === "login" ? "log in" : "sign up"}: ${error.message}`);
+    }
   };
-  const submitReview = (event) => {
+  const requestPasswordReset = async (event) => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    const email = String(data.get("identity") || "").trim().toLowerCase();
+    try {
+      const result = await api.post("/auth/password-reset/request", { email });
+      setAuthMode("login");
+      setToast(result.message);
+    } catch (error) {
+      setToast(`Could not send a password reset email: ${error.message}`);
+    }
+  };
+  const updatePassword = async (event) => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    const password = String(data.get("password") || "");
+    try {
+      const result = await api.post("/auth/password-reset/confirm", {
+        token: passwordResetToken,
+        password,
+      });
+      setPasswordResetToken("");
+      setAuthOpen(false);
+      setAuthMode("login");
+      setToast(result.message);
+    } catch (error) {
+      setToast(`Could not update your password: ${error.message}`);
+    }
+  };
+  const logout = async () => {
+    try {
+      clearAccessToken();
+      setAuthUser(null);
+      navigate("home");
+      setToast("You’re signed out.");
+    } catch (error) {
+      setToast(`Could not sign out: ${error.message}`);
+    }
+  };
+  const submitRequest = async (event) => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    try {
+      const request = await api.post("/requests", {
+        freelancerId: requestTarget.id,
+        service: String(data.get("service")),
+        description: String(data.get("description")),
+        budget: Number(data.get("budget")),
+        deadline: String(data.get("deadline")),
+        location: String(data.get("location")),
+      });
+      setRequests((current) => [mapRequest(request), ...current]);
+      setRequestTarget(null);
+      navigate("dashboard");
+      setToast("Job request sent. You’ll see updates on your dashboard.");
+    } catch (error) {
+      setToast(`Could not send the job request: ${error.message}`);
+    }
+  };
+  const submitReview = async (event) => {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
     const rating = Number(data.get("rating"));
-    const review = {
-      id: `review-${Date.now()}`,
-      freelancerId: reviewTarget.freelancerId,
-      client: user.name,
-      rating,
-      comment: String(data.get("comment")).trim(),
-      date: new Date().toLocaleDateString("en-KE", {
-        month: "short",
-        year: "numeric",
-      }),
-    };
-    setReviews((current) => [review, ...current]);
-    setRequests((current) =>
-      current.map((request) =>
-        request.id === reviewTarget.id
-          ? { ...request, reviewed: true }
-          : request,
-      ),
-    );
-    setProfiles((current) =>
-      current.map((profile) =>
-        profile.id === reviewTarget.freelancerId
-          ? {
-              ...profile,
-              rating: Number(
-                (
-                  (Number(profile.rating || 0) * Number(profile.reviews || 0) +
-                    rating) /
-                  (Number(profile.reviews || 0) + 1)
-                ).toFixed(1),
-              ),
-              reviews: Number(profile.reviews || 0) + 1,
-            }
-          : profile,
-      ),
-    );
-    setReviewTarget(null);
-    setToast("Thanks for sharing your experience.");
+    try {
+      const review = await api.post(
+        `/requests/${encodeURIComponent(reviewTarget.id)}/review`,
+        {
+          rating,
+          comment: String(data.get("comment")).trim(),
+        },
+      );
+      setReviews((current) => [mapReview(review), ...current]);
+      setRequests((current) =>
+        current.map((request) =>
+          request.id === reviewTarget.id
+            ? { ...request, reviewed: true }
+            : request,
+        ),
+      );
+      setProfiles((current) =>
+        current.map((profile) =>
+          profile.id === reviewTarget.freelancerId
+            ? {
+                ...profile,
+                rating: Number(
+                  (
+                    (profile.rating * profile.reviews + rating) /
+                    (profile.reviews + 1)
+                  ).toFixed(2),
+                ),
+                reviews: profile.reviews + 1,
+              }
+            : profile,
+        ),
+      );
+      setReviewTarget(null);
+      setToast("Thanks for sharing your experience.");
+    } catch (error) {
+      setToast(`Could not post your review: ${error.message}`);
+    }
   };
 
   return (
@@ -427,11 +590,7 @@ export default function App() {
                 <button
                   className="logout-button"
                   title="Sign out"
-                  onClick={() => {
-                    setUser(null);
-                    navigate("home");
-                    setToast("You’re signed out.");
-                  }}
+                  onClick={logout}
                 >
                   <Icon name="logout" size={17} />
                 </button>
@@ -568,6 +727,8 @@ export default function App() {
         setAuthOpen={setAuthOpen}
         setPendingFreelancerId={setPendingFreelancerId}
         completeAuth={completeAuth}
+        requestPasswordReset={requestPasswordReset}
+        updatePassword={updatePassword}
         requestTarget={requestTarget}
         setRequestTarget={setRequestTarget}
         submitRequest={submitRequest}

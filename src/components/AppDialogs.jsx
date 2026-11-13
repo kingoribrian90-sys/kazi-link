@@ -9,6 +9,8 @@ export function AppDialogs({
   setAuthOpen,
   setPendingFreelancerId,
   completeAuth,
+  requestPasswordReset,
+  updatePassword,
   requestTarget,
   setRequestTarget,
   submitRequest,
@@ -18,22 +20,37 @@ export function AppDialogs({
   toast,
   setToast,
 }) {
+  const authTitles = {
+    signup: "Join KaziLink",
+    login: "Welcome back",
+    reset: "Reset your password",
+    recovery: "Choose a new password",
+  };
+  const authSubtitles = {
+    signup: "Your next great connection is just around the corner.",
+    login: "Log in to manage your work and requests.",
+    reset: "We’ll email you a secure link to reset your password.",
+    recovery: "Choose a new password for your KaziLink account.",
+  };
+  const authSubmit =
+    authMode === "reset"
+      ? requestPasswordReset
+      : authMode === "recovery"
+        ? updatePassword
+        : completeAuth;
+
   return (
     <>
       {authOpen && (
         <Modal
-          title={authMode === "signup" ? "Join KaziLink" : "Welcome back"}
-          subtitle={
-            authMode === "signup"
-              ? "Your next great connection is just around the corner."
-              : "Log in to manage your work and requests."
-          }
+          title={authTitles[authMode]}
+          subtitle={authSubtitles[authMode]}
           onClose={() => {
             setAuthOpen(false);
             setPendingFreelancerId(null);
           }}
         >
-          <form className="form-stack" onSubmit={completeAuth}>
+          <form className="form-stack" onSubmit={authSubmit}>
             {authMode === "signup" && (
               <>
                 <div className="role-switch">
@@ -63,45 +80,74 @@ export function AppDialogs({
                 </label>
               </>
             )}
-            <label>
-              Email or phone number
-              <input
-                name="identity"
-                placeholder="you@example.com or 07XX XXX XXX"
-                autoComplete="username"
-                required
-              />
-            </label>
-            <label>
-              Password
-              <input
-                name="password"
-                type="password"
-                placeholder="At least 6 characters"
-                minLength="6"
-                autoComplete={
-                  authMode === "signup" ? "new-password" : "current-password"
-                }
-                required
-              />
-            </label>
+            {(authMode === "login" || authMode === "signup" || authMode === "reset") && (
+              <label>
+                Email
+                <input
+                  name="identity"
+                  type="email"
+                  placeholder="you@example.com"
+                  autoComplete="email"
+                  required
+                />
+              </label>
+            )}
+            {(authMode === "login" || authMode === "signup" || authMode === "recovery") && (
+              <label>
+                {authMode === "recovery" ? "New password" : "Password"}
+                <input
+                  name="password"
+                  type="password"
+                  placeholder="At least 6 characters"
+                  minLength="6"
+                  autoComplete={
+                    authMode === "login" ? "current-password" : "new-password"
+                  }
+                  required
+                />
+              </label>
+            )}
             <button className="button button-primary button-full" type="submit">
-              {authMode === "signup" ? "Create free account" : "Log in"}{" "}
+              {authMode === "signup"
+                ? "Create free account"
+                : authMode === "login"
+                  ? "Log in"
+                  : authMode === "reset"
+                    ? "Send reset link"
+                    : "Save new password"}{" "}
               <Icon name="arrow" size={17} />
             </button>
-            <p className="form-switch">
-              {authMode === "signup"
-                ? "Already have an account?"
-                : "New to KaziLink?"}{" "}
-              <button
-                type="button"
-                onClick={() =>
-                  setAuthMode(authMode === "signup" ? "login" : "signup")
-                }
-              >
-                {authMode === "signup" ? "Log in" : "Create an account"}
-              </button>
-            </p>
+            {(authMode === "signup" || authMode === "login") && (
+              <p className="form-switch">
+                {authMode === "signup"
+                  ? "Already have an account?"
+                  : "New to KaziLink?"}{" "}
+                <button
+                  type="button"
+                  onClick={() =>
+                    setAuthMode(authMode === "signup" ? "login" : "signup")
+                  }
+                >
+                  {authMode === "signup" ? "Log in" : "Create an account"}
+                </button>
+              </p>
+            )}
+            {authMode === "login" && (
+              <p className="form-switch">
+                Forgot your password?{" "}
+                <button type="button" onClick={() => setAuthMode("reset")}>
+                  Reset it
+                </button>
+              </p>
+            )}
+            {authMode === "reset" && (
+              <p className="form-switch">
+                Remembered it?{" "}
+                <button type="button" onClick={() => setAuthMode("login")}>
+                  Back to log in
+                </button>
+              </p>
+            )}
             <p className="form-note">
               <Icon name="shield" size={14} /> Your details are kept private and
               secure.

@@ -2,11 +2,11 @@ import { categories } from "../../data.js";
 import { Avatar, Icon, KES, titleCase } from "../ui.jsx";
 
 export function ProfileEditor({ profile, editing, setEditing, onSaveProfile, onOpen }) {
-  const saveEdits = (event) => {
+  const saveEdits = async (event) => {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
     const service = String(data.get("service")).trim();
-    onSaveProfile({
+    const saved = await onSaveProfile({
       ...profile,
       name: String(data.get("name")).trim(),
       role: String(data.get("role")).trim(),
@@ -26,7 +26,7 @@ export function ProfileEditor({ profile, editing, setEditing, onSaveProfile, onO
         ),
       })),
     });
-    setEditing(false);
+    if (saved) setEditing(false);
   };
 
   return (
