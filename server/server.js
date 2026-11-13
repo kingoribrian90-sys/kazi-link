@@ -47,7 +47,7 @@ app.use("/api/saved-profiles", savedProfileRoutes);
 app.use(notFoundHandler);
 app.use(errorHandler);
 
-const port = Number(process.env.PORT || 3001);
+const port = Number(process.env.PORT || 5173);
 app.listen(port, () => {
   console.log(`KaziLink API listening on http://localhost:${port}`);
 });
